@@ -1,79 +1,226 @@
 <!DOCTYPE html>
 <html>
+<head>
+	<meta charset="utf-8">
+	<title>Creative Mornings Egg Logger</title>
+	<style>
+	body{
+		font-family: Helvetica, Arial, sans-serif;
+	}
+	#status {
+		font-size:30vmin;
+		font-weight:bold;
+		text-align:center;
+		position:fixed;
+		margin:auto;
+		top:0;
+		left:0;
+		bottom:0;
+		right:0;
+		height:40vmin;
+	}
+	
+	.source {
+		style="margin:auto;
+		position:absolute;
+		left:2%;
+		bottom:2%;
+	}
+	#timestamp{
+		style="margin:auto;
+		position:absolute;
+		left:2%;
+		top:2%;
+		font-size:0.8em;
+	}
+	</style>
+</head>
+<body>
+	<div id="status"></div>
+	<select class="source" id="measurementSelect"></select>
+	<div id="timestamp"></div>
+</body>
+	
+<script src="//ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script>
+<script src="//cdnjs.cloudflare.com/ajax/libs/augment.js/1.0.0/augment.min.js"></script>
+<script src="http://d3js.org/d3.v3.min.js" charset="utf-8"></script>
+<script src="https://sdk.amazonaws.com/js/aws-sdk-2.0.0-rc1.min.js"></script>
+<!-- AWS SDK info from http://docs.aws.amazon.com/AWSJavaScriptSDK/guide/index.html -->
+<script>
+$(document).ready(function() {
+	// Functions to convert to and from kelvin.  The data in the database is kept
+	// in kelvin so it can be converted easily to other units.
+	var fahrenheitToKelvin = function(f) {
+		return (Number(f) + 459.67)*(5/9);
+	};
+	var kelvinToFahrenheit = function(k) {
+		return Number(k)*(9/5) - 459.67;
+	};
+	var celsiusToKelvin = function(c) {
+		return Number(c) + 273.15;
+	};
+	var kelvinToCelsius = function(k) {
+		return Number(k) - 273.15;
+	};
 
-  <head>
-    <meta charset='utf-8' />
-    <meta http-equiv="X-UA-Compatible" content="chrome=1" />
-    <meta name="description" content="Eggs : Temperature logger" />
+	// Current unit conversion functions.
+	var toKelvin = fahrenheitToKelvin;
+	var fromKelvin = kelvinToFahrenheit;
 
-    <link rel="stylesheet" type="text/css" media="screen" href="stylesheets/stylesheet.css">
+	// Temperature data retrieved from database.
+	var tempData = null;
+	// Most recently retrieved measurement from database.
+	var lastseen = null;
+            
+	/***********************************************************************************
+	***********************************************************************************
+	**                                                                               **
+	**  PUT YOUR READ ONLY USER ACCESS KEYS BELOW:                                   **
+	**  Do NOT put your own AWS credentials below as they will be visible to anyone  **
+	**  who views this web page!  Use credentials for a user with read-only access   **
+	**  to your DynamoDB table.                                                      **
+	**                                                                               **
+	***********************************************************************************
+	***********************************************************************************/
+	AWS.config.update({ accessKeyId: 'AKIAIFMBTVXU2C6EBFPA', 
+	secretAccessKey: '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' });
+            
+	/***********************************************************************************
+	***********************************************************************************
+	**                                                                               **
+	**  PUT YOUR DYNAMODB TABLE REGION BELOW:                                        **
+	**  See http://docs.aws.amazon.com/general/latest/gr/rande.html#ddb_region for   **
+	**  appropriate value.                                                           **           
+	**                                                                               **
+	***********************************************************************************
+	***********************************************************************************/
+	AWS.config.region = 'eu-west-1';
+	var dynamodb = new AWS.DynamoDB();
 
-    <title>Eggs</title>
-  </head>
+	// Query all the unique measurement ids from the database.
+	var queryUniqueMeasurements = function(callback) {
+		var measurements = {};
+		// Grab a page of results from the provided start key.
+		var queryPage = function(startkey) {
+			var params = {  'TableName': 'temperatures',
+			'Select': 'SPECIFIC_ATTRIBUTES',
+			'AttributesToGet': ['Id'] };
+			if (startkey != null) {
+				params['ExclusiveStartKey'] = startkey;
+			}
+			dynamodb.scan(params, function(err, data) {
+				if (data) {
+					data.Items.forEach(function(item) {
+						// Maintain a set of measurement id values.
+						measurements[item.Id.S] = true;
+					});
+					if (data.LastEvaluatedKey) {
+						// More data to retrieve, grab another page.
+						queryPage(data.LastEvaluatedKey);
+					}
+					else {
+						// No more data, invoke the callback with results.
+						callback(measurements);
+					}
+				}
+			});
+		}
+		queryPage();
+	};
 
-  <body>
+	// Query all the temperatures that were measured after lastseen 
+	// for the provided measurement id.
+	var queryTemps = function(measurementId, lastseen, callback) {
+		var data = [];
+		// Grab a page of results from the provided start key.
+		var queryPage = function(startkey) {
+			var params = {  'TableName': 'temperatures',
+			'Select': 'SPECIFIC_ATTRIBUTES',
+			'AttributesToGet': ['Date', 'Temp'],
+			'KeyConditions' : { 
+				'Id': { 
+					'AttributeValueList': [ { 'S': measurementId } ],
+					'ComparisonOperator': 'EQ'
+				}
+			} 
+		};
+		if (startkey != null) {
+			params.ExclusiveStartKey = startkey;
+		}
+		if (lastseen != null) {
+			params.KeyConditions['Date'] = {
+				'AttributeValueList': [ { 'N': (lastseen.getTime()/1000).toString() } ],
+				'ComparisonOperator': 'GT'
+			};
+		}
+		dynamodb.query(params, function(err, newdata) {
+			if (newdata) {
+				// Add retrieved results to data.
+				data = data.concat(newdata.Items.map(function(item) {
+					return { date: new Date(Number(item.Date.N)*1000), temp: Number(item.Temp.N) };
+				}));
+				if (newdata.LastEvaluatedKey) {
+					// More data to retrieve, grab another page.
+					queryPage(data.LastEvaluatedKey);
+				}
+				else {
+					// No more data, invoke the callback with results.
+					callback(data);
+				}
+			}
+		});    
+	};
+	queryPage();
+};
+			
+// Populate list of temp ID values with data queried from DB.
+queryUniqueMeasurements(function(measurements) {
+	var measurementSelect = $('#measurementSelect');
+	measurementSelect.empty();
+	measurementSelect.append("<option value='' disabled selected style='display:none;'>Choose...</option>");
+	for (id in measurements) {
+		measurementSelect.append('<option>' + id + '</option>');
+	}
+});
 
-    <!-- HEADER -->
-    <div id="header_wrap" class="outer">
-        <header class="inner">
-          <a id="forkme_banner" href="https://github.com/xavieralexandre/eggs">View on GitHub</a>
+// Update the graph, trend line, and estimated time.
+var updateUI = function() {
+	$('#status').removeClass();
+	$('#status').text(.1*Math.round(10*kelvinToCelsius(tempData[tempData.length-1].temp)) + '°C');
+	$('#timestamp').text(lastseen);
+};
 
-          <h1 id="project_title">Eggs</h1>
-          <h2 id="project_tagline">Temperature logger</h2>
+// Download data from the database and update the data in memory.
+var updateData = function() {
+	queryTemps($('#measurementSelect').val(), lastseen, function(data) {
+		if (tempData == null) {
+			tempData = data;
+		}
+		else {
+			tempData = tempData.concat(data);
+		}
+		// Update UI, etc. if there is data available.
+		if (tempData != null && tempData.length > 0) {
+			// Update most recent measurement time.
+			lastseen = tempData[tempData.length-1].date;
+			updateUI();
+		}
+	});
+};
 
-            <section id="downloads">
-              <a class="zip_download_link" href="https://github.com/xavieralexandre/eggs/zipball/master">Download this project as a .zip file</a>
-              <a class="tar_download_link" href="https://github.com/xavieralexandre/eggs/tarball/master">Download this project as a tar.gz file</a>
-            </section>
-        </header>
-    </div>
+// Draw graph when measurement is selected.
+$('#measurementSelect').change(function() {
+	lastseen = null;
+	tempData = null;
+	updateData();
+});
 
-    <!-- MAIN CONTENT -->
-    <div id="main_content_wrap" class="outer">
-      <section id="main_content" class="inner">
-        <h3>
-<a name="welcome-to-github-pages" class="anchor" href="#welcome-to-github-pages"><span class="octicon octicon-link"></span></a>Welcome to GitHub Pages.</h3>
-
-<p>This automatic page generator is the easiest way to create beautiful pages for all of your projects. Author your page content here using GitHub Flavored Markdown, select a template crafted by a designer, and publish. After your page is generated, you can check out the new branch:</p>
-
-<pre><code>$ cd your_repo_root/repo_name
-$ git fetch origin
-$ git checkout gh-pages
-</code></pre>
-
-<p>If you're using the GitHub for Mac, simply sync your repository and you'll see the new branch.</p>
-
-<h3>
-<a name="designer-templates" class="anchor" href="#designer-templates"><span class="octicon octicon-link"></span></a>Designer Templates</h3>
-
-<p>We've crafted some handsome templates for you to use. Go ahead and continue to layouts to browse through them. You can easily go back to edit your page before publishing. After publishing your page, you can revisit the page generator and switch to another theme. Your Page content will be preserved if it remained markdown format.</p>
-
-<h3>
-<a name="rather-drive-stick" class="anchor" href="#rather-drive-stick"><span class="octicon octicon-link"></span></a>Rather Drive Stick?</h3>
-
-<p>If you prefer to not use the automatic generator, push a branch named <code>gh-pages</code> to your repository to create a page manually. In addition to supporting regular HTML content, GitHub Pages support Jekyll, a simple, blog aware static site generator written by our own Tom Preston-Werner. Jekyll makes it easy to create site-wide headers and footers without having to copy them across every page. It also offers intelligent blog support and other advanced templating features.</p>
-
-<h3>
-<a name="authors-and-contributors" class="anchor" href="#authors-and-contributors"><span class="octicon octicon-link"></span></a>Authors and Contributors</h3>
-
-<p>You can <a href="https://github.com/blog/821" class="user-mention">@mention</a> a GitHub username to generate a link to their profile. The resulting <code>&lt;a&gt;</code> element will link to the contributor's GitHub Profile. For example: In 2007, Chris Wanstrath (<a href="https://github.com/defunkt" class="user-mention">@defunkt</a>), PJ Hyett (<a href="https://github.com/pjhyett" class="user-mention">@pjhyett</a>), and Tom Preston-Werner (<a href="https://github.com/mojombo" class="user-mention">@mojombo</a>) founded GitHub.</p>
-
-<h3>
-<a name="support-or-contact" class="anchor" href="#support-or-contact"><span class="octicon octicon-link"></span></a>Support or Contact</h3>
-
-<p>Having trouble with Pages? Check out the documentation at <a href="http://help.github.com/pages">http://help.github.com/pages</a> or contact <a href="mailto:support@github.com">support@github.com</a> and we’ll help you sort it out.</p>
-      </section>
-    </div>
-
-    <!-- FOOTER  -->
-    <div id="footer_wrap" class="outer">
-      <footer class="inner">
-        <p class="copyright">Eggs maintained by <a href="https://github.com/xavieralexandre">xavieralexandre</a></p>
-        <p>Published with <a href="http://pages.github.com">GitHub Pages</a></p>
-      </footer>
-    </div>
-
-    
-
-  </body>
+// Create auto update timer to run once a minute.
+var timer = window.setInterval(function() {
+	// Update the data if auto updates are turned on and a measurement is selected.
+	updateData();
+}, 10*1000);
+});
+</script>
 </html>
+
