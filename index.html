@@ -186,7 +186,7 @@ queryUniqueMeasurements(function(measurements) {
 // Update the graph, trend line, and estimated time.
 var updateUI = function() {
 	$('#status').removeClass();
-	$('#status').text(.1*Math.round(10*kelvinToCelsius(tempData[tempData.length-1].temp)) + '°C');
+	$('#status').text(Math.round(kelvinToCelsius(tempData[tempData.length-1].temp)) + '°C');
 	$('#timestamp').text(lastseen);
 };
 
