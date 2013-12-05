@@ -217,9 +217,8 @@ $('#measurementSelect').change(function() {
 
 // Create auto update timer to run once a minute.
 var timer = window.setInterval(function() {
-	// Update the data if auto updates are turned on and a measurement is selected.
 	updateData();
-}, 10*1000);
+}, 1*1000);
 });
 </script>
 </html>
